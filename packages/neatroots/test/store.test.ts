@@ -37,6 +37,21 @@ describe("store", () => {
     expect(st.getRun(t)!.span_count).toBe(3);
   });
 
+  it("reconciles run aggregates when a span is updated", () => {
+    const st = store();
+    const t = hex(16);
+    const root = hex(8);
+    const original = llmSpan(t, root, { user: "first" });
+    st.ingest([batch([original])]);
+    expect(st.getRun(t)).toMatchObject({ span_count: 1, llm_calls: 1, tool_calls: 0, error_count: 0, total_tokens: 15 });
+
+    const updated = toolSpan(t, root, "lookup_order", "{}", undefined, "timeout");
+    updated.spanId = original.spanId;
+    st.ingest([batch([updated])]);
+
+    expect(st.getRun(t)).toMatchObject({ span_count: 1, llm_calls: 0, tool_calls: 1, error_count: 1, total_tokens: 0 });
+  });
+
   it("offloads large payloads to blobs and restores them losslessly", () => {
     const st = store();
     const t = hex(16);
