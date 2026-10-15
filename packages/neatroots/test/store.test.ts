@@ -97,6 +97,26 @@ describe("store", () => {
     st.ingest([batch([corrected])]);
 
     expect(st.getRun(t)).toMatchObject({ started_ms: 200, last_span_ms: 900 });
+
+    // Identical and non-edge replacements cannot disturb the bounds.
+    st.ingest([batch([corrected])]);
+    const inner = { ...corrected, startTimeUnixNano: "400000000", endTimeUnixNano: "700000000" };
+    st.ingest([batch([inner])]);
+    expect(st.getRun(t)).toMatchObject({ started_ms: 200, last_span_ms: 900 });
+
+    // Moving the same span outward still uses the normal incremental path.
+    const outer = { ...edge, startTimeUnixNano: "50000000", endTimeUnixNano: "1100000000" };
+    st.ingest([batch([outer])]);
+    expect(st.getRun(t)).toMatchObject({ started_ms: 50, last_span_ms: 1100 });
+
+    // Multiple corrections in one batch leave bounds equal to the final stored set.
+    st.ingest([
+      batch([
+        { ...outer, startTimeUnixNano: "400000000", endTimeUnixNano: "700000000" },
+        { ...middle, startTimeUnixNano: "300000000", endTimeUnixNano: "800000000" },
+      ]),
+    ]);
+    expect(st.getRun(t)).toMatchObject({ started_ms: 300, last_span_ms: 800 });
   });
 
   it("offloads large payloads to blobs and restores them losslessly", () => {
