@@ -5,6 +5,21 @@ import { batch, hex, s, span } from "./helpers.js";
 const KEY = "sk-proj-abcdefghij1234567890ABCDEFghij";
 
 describe("redaction before a cloud send", () => {
+  it("redacts the same secret in string and byte attributes", () => {
+    const b = batch([span({ traceId: hex(16), spanId: hex(8), name: "root", kind: "workflow" })]);
+    b.spans[0].attributes = [
+      { key: "string-secret", value: { stringValue: KEY } },
+      { key: "byte-secret", value: { bytesValue: Buffer.from(KEY, "utf8").toString("base64") } },
+    ];
+
+    const { batches, hits } = redactBatches([b], BUILTIN_RULES);
+    const attributes = batches[0].spans[0].attributes;
+    expect(attributes[0].value).toEqual({ stringValue: "[redacted:api_key]" });
+    expect(attributes[1].value).toEqual({ bytesValue: Buffer.from("[redacted:api_key]", "utf8").toString("base64") });
+    expect(hits.map((hit) => hit.kind)).toEqual(["api_key", "api_key"]);
+    expect(JSON.stringify(hits)).not.toContain(KEY);
+  });
+
   it("redacts span names, event names, link and scope attributes, not just span attributes", () => {
     const b = batch([
       span({
