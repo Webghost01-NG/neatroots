@@ -33,8 +33,10 @@ The relay is tested end to end by forwarding into a second neatroots instance an
 - From a coding agent: `push_to_cloud` asks; you confirm in the app before anything is sent.
 
 Before each send neatroots shows a redaction preview. Emails, phone numbers, API keys, bearer tokens and
-private keys are always redacted; add your own patterns in Settings. The SDK's own `mask` and PII
-options still apply first, in your process. Every send is logged (Settings → Neatlogs Cloud).
+private keys are always redacted; add your own patterns in Settings. Redaction also inspects OTLP byte
+attributes when they contain valid UTF-8 text, while arbitrary binary values remain unchanged. The
+SDK's own `mask` and PII options still apply first, in your process. Every send is logged (Settings →
+Neatlogs Cloud).
 
 The project API key is stored in the macOS Keychain (`neatroots cloud login`), never in the database.
 
