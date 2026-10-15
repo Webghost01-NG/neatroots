@@ -287,6 +287,42 @@ export interface RunFilter {
   includeDoctor?: boolean;
 }
 
+type AggregateSpan = Pick<SpanRow, "is_marker" | "span_kind" | "status_code" | "prompt_tokens" | "completion_tokens" | "total_tokens">;
+
+interface RunContribution {
+  spans: number;
+  llmCalls: number;
+  toolCalls: number;
+  errors: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+const NO_RUN_CONTRIBUTION: RunContribution = {
+  spans: 0,
+  llmCalls: 0,
+  toolCalls: 0,
+  errors: 0,
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+};
+
+function runContribution(span: AggregateSpan): RunContribution {
+  if (span.is_marker) return NO_RUN_CONTRIBUTION;
+  const llm = span.span_kind === "LLM";
+  return {
+    spans: 1,
+    llmCalls: llm ? 1 : 0,
+    toolCalls: span.span_kind === "TOOL" || span.span_kind === "MCP_TOOL" ? 1 : 0,
+    errors: span.status_code === 2 ? 1 : 0,
+    promptTokens: llm ? (span.prompt_tokens ?? 0) : 0,
+    completionTokens: llm ? (span.completion_tokens ?? 0) : 0,
+    totalTokens: llm ? (span.total_tokens ?? 0) : 0,
+  };
+}
+
 function nsToMs(ns: string): number {
   if (!ns || ns === "0") return 0;
   // Keep sub-millisecond precision without losing the int64.
@@ -430,17 +466,20 @@ export class Store {
         const resAttrs = kvToPlain(b.resource.attributes);
         for (const span of b.spans) {
           const view = buildView(span, b.resource.attributes);
-          const exists = this.db
-            .prepare("SELECT 1 FROM spans WHERE trace_id = ? AND span_id = ?")
-            .get(span.traceId, span.spanId);
+          const previous = this.db
+            .prepare(
+              `SELECT is_marker, span_kind, status_code, prompt_tokens, completion_tokens, total_tokens
+               FROM spans WHERE trace_id = ? AND span_id = ?`,
+            )
+            .get(span.traceId, span.spanId) as AggregateSpan | undefined;
           let u = updates.get(span.traceId);
           if (!u) {
             u = { traceId: span.traceId, spans: [], runCreated: false, rootEnded: false, completed: false };
             updates.set(span.traceId, u);
           }
           const row = this.writeSpan(span, view, resourceId, scopeId, now);
-          u.spans.push({ row, view, isNew: !exists });
-          const runFlags = this.updateRun(span, view, row, resAttrs, now, !exists);
+          u.spans.push({ row, view, isNew: !previous });
+          const runFlags = this.updateRun(span, view, row, resAttrs, now, previous);
           if (runFlags.created) u.runCreated = true;
           if (runFlags.rootEnded) u.rootEnded = true;
           if (runFlags.completed) u.completed = true;
@@ -526,7 +565,7 @@ export class Store {
     row: SpanRow,
     resAttrs: Record<string, Plain>,
     now: number,
-    isNew: boolean,
+    previous: AggregateSpan | undefined,
   ): { created: boolean; rootEnded: boolean; completed: boolean } {
     const flags = { created: false, rootEnded: false, completed: false };
     let run = this.getRun(span.traceId);
@@ -564,18 +603,22 @@ export class Store {
           sets.push("ended_ms = COALESCE(ended_ms, @end)");
         }
       }
-    } else if (isNew) {
-      sets.push("span_count = span_count + 1");
-      if (view.kind === "LLM") {
-        sets.push("llm_calls = llm_calls + 1");
-        sets.push("prompt_tokens = prompt_tokens + @pt", "completion_tokens = completion_tokens + @ct", "total_tokens = total_tokens + @tt");
-        p.pt = view.promptTokens ?? 0;
-        p.ct = view.completionTokens ?? 0;
-        p.tt = view.totalTokens ?? 0;
-      }
-      if (view.kind === "TOOL" || view.kind === "MCP_TOOL") sets.push("tool_calls = tool_calls + 1");
-      if (span.status.code === 2) sets.push("error_count = error_count + 1");
     }
+    const before = previous ? runContribution(previous) : NO_RUN_CONTRIBUTION;
+    const afterContribution = runContribution(row);
+    const addDelta = (column: string, parameter: string, next: number, prior: number) => {
+      const delta = next - prior;
+      if (!delta) return;
+      sets.push(`${column} = ${column} + @${parameter}`);
+      p[parameter] = delta;
+    };
+    addDelta("span_count", "spanDelta", afterContribution.spans, before.spans);
+    addDelta("llm_calls", "llmDelta", afterContribution.llmCalls, before.llmCalls);
+    addDelta("tool_calls", "toolDelta", afterContribution.toolCalls, before.toolCalls);
+    addDelta("error_count", "errorDelta", afterContribution.errors, before.errors);
+    addDelta("prompt_tokens", "promptDelta", afterContribution.promptTokens, before.promptTokens);
+    addDelta("completion_tokens", "completionDelta", afterContribution.completionTokens, before.completionTokens);
+    addDelta("total_tokens", "totalDelta", afterContribution.totalTokens, before.totalTokens);
     if (view.interrupted) {
       sets.push("interrupted = 1", "status = 'interrupted'");
       if (view.terminationReason) {

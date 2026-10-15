@@ -45,10 +45,38 @@ describe("store", () => {
     st.ingest([batch([original])]);
     expect(st.getRun(t)).toMatchObject({ span_count: 1, llm_calls: 1, tool_calls: 0, error_count: 0, total_tokens: 15 });
 
+    // An identical exporter retry stays idempotent.
+    st.ingest([batch([original])]);
+    expect(st.getRun(t)).toMatchObject({ span_count: 1, llm_calls: 1, tool_calls: 0, error_count: 0, total_tokens: 15 });
+
+    // A completed export of the same logical span replaces provisional usage and status.
+    const completed = span({
+      traceId: t,
+      spanId: original.spanId,
+      parent: root,
+      name: original.name,
+      kind: "llm",
+      status: 2,
+      attrs: [
+        s("neatlogs.llm.token_count.prompt", 30),
+        s("neatlogs.llm.token_count.completion", 12),
+        s("neatlogs.llm.token_count.total", 42),
+      ],
+    });
+    st.ingest([batch([completed])]);
+    expect(st.getRun(t)).toMatchObject({ span_count: 1, llm_calls: 1, tool_calls: 0, error_count: 1, prompt_tokens: 30, completion_tokens: 12, total_tokens: 42 });
+
     const updated = toolSpan(t, root, "lookup_order", "{}", undefined, "timeout");
     updated.spanId = original.spanId;
     st.ingest([batch([updated])]);
+    expect(st.getRun(t)).toMatchObject({ span_count: 1, llm_calls: 0, tool_calls: 1, error_count: 1, total_tokens: 0 });
 
+    const marker = markerSpan(t, root);
+    marker.spanId = original.spanId;
+    st.ingest([batch([marker])]);
+    expect(st.getRun(t)).toMatchObject({ span_count: 0, llm_calls: 0, tool_calls: 0, error_count: 0, total_tokens: 0 });
+
+    st.ingest([batch([updated])]);
     expect(st.getRun(t)).toMatchObject({ span_count: 1, llm_calls: 0, tool_calls: 1, error_count: 1, total_tokens: 0 });
   });
 
